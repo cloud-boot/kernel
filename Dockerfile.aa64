@@ -42,9 +42,16 @@ RUN make ARCH=arm64 defconfig \
  && make ARCH=arm64 olddefconfig
 
 # Native build (we're on an aarch64 host so no CROSS_COMPILE).
-# `Image` is the EFISTUB PE32+ kernel; that's what we embed as `.linux`.
+# `Image` is the PE32+ EFISTUB kernel — that's what go-coff/stub's
+# LoadImage hands to the firmware on the chain-load path.
+#
+# Note: CONFIG_EFI_ZBOOT=y is set in the cloud fragment, but at the
+# time of writing (Linux 6.6.x) the arm64 `Image.gz` target does NOT
+# produce the self-decompressing PE32+ wrapper — only a plain gzipped
+# kernel that the firmware would not know what to do with. Stick with
+# the uncompressed `Image` until we wire up `vmlinuz.efi` generation
+# properly.
 RUN make ARCH=arm64 -j"$(nproc)" Image
 
-# Copy the resulting Image somewhere a `docker cp` can reach.
 RUN cp arch/arm64/boot/Image /Image \
  && ls -lh /Image
