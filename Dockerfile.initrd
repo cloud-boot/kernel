@@ -1,0 +1,71 @@
+# Builds a microscopic initramfs cpio archive whose /init prints a magic
+# string the boot test grep can lock onto, then powers off (writing 'o'
+# to the QEMU virt machine's sysconf register — same idiom kernel-self-
+# tests use). The result lands at /initramfs.cpio.gz inside the image.
+#
+# The static binary we drop in /init is just a tiny aarch64 assembly
+# program; we don't pull busybox or musl because we want to demonstrate
+# that the stub → kernel handoff works, not that userspace is wired.
+
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    binutils \
+    cpio \
+    gzip \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# /init: print a magic string to /dev/console (fd 1 is stdout, attached
+# by the kernel for PID 1) then trigger PSCI SYSTEM_OFF via the HVC
+# instruction so QEMU exits cleanly. Pure aarch64 asm — no libc, no
+# dynamic linker.
+RUN cat > init.s <<'EOS'
+    .text
+    .globl _start
+_start:
+    // write(1, msg, 19)
+    mov     x0, #1
+    adrp    x1, msg
+    add     x1, x1, :lo12:msg
+    mov     x2, #19
+    mov     x8, #64                  // __NR_write
+    svc     #0
+
+    // reboot(LINUX_REBOOT_MAGIC1=0xfee1dead,
+    //        LINUX_REBOOT_MAGIC2=0x28121969,
+    //        LINUX_REBOOT_CMD_POWER_OFF=0x4321fedc,
+    //        NULL)
+    // The kernel handles the actual PSCI call from kernel mode, so we
+    // don't try `hvc #0` from EL0 ourselves (that's privileged and
+    // would trap as an undefined instruction).
+    movz    x0, #0xdead
+    movk    x0, #0xfee1, lsl #16
+    movz    x1, #0x1969
+    movk    x1, #0x2812, lsl #16
+    movz    x2, #0xfedc
+    movk    x2, #0x4321, lsl #16
+    mov     x3, #0
+    mov     x8, #142                 // __NR_reboot
+    svc     #0
+
+    // Unreachable.
+1:  b 1b
+
+    .section .rodata
+msg:
+    .ascii "GOCOFF-INITRD-OK\n\0\0\0"
+EOS
+
+# Build a static aarch64 binary. -nostdlib + -static keep it tiny.
+RUN as -o init.o init.s \
+ && ld -static -nostdlib -e _start -o init init.o \
+ && strip init \
+ && ls -lh init
+
+# Lay out the initramfs root, then pack with cpio + gzip.
+RUN mkdir -p root && cp init root/init && chmod +x root/init \
+ && (cd root && find . -print0 | cpio --null -ov --format=newc | gzip -9) > /initramfs.cpio.gz \
+ && ls -lh /initramfs.cpio.gz

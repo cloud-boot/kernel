@@ -1,0 +1,4 @@
+.DS_Store
+/Image
+/initramfs.cpio.gz
+/direct-kernel.log

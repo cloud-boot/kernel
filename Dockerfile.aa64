@@ -1,0 +1,44 @@
+# Builds a minimal aarch64 Linux kernel as a PE32+ EFISTUB Image, ready
+# to be embedded as the `.linux` section of a UKI. Designed to run on an
+# aarch64 host (Apple Silicon, Graviton, etc.) so the build is native —
+# no qemu-user emulation, no cross-toolchain dance.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=6.6.74
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Pull the stable tarball directly from kernel.org. Avoids cloning the
+# full git history (~5 GiB) when we only want one revision.
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+# Start from the canonical arm64 defconfig: it already enables EFI +
+# EFI_STUB + PL011 serial console + DEVTMPFS + initrd support, which is
+# exactly what we need to boot under QEMU's virt machine via our stub.
+RUN make ARCH=arm64 defconfig
+
+# Native build (we're on an aarch64 host so no CROSS_COMPILE).
+# `Image` is the EFISTUB PE32+ kernel; that's what we embed as `.linux`.
+RUN make ARCH=arm64 -j"$(nproc)" Image
+
+# Copy the resulting Image somewhere a `docker cp` can reach.
+RUN cp arch/arm64/boot/Image /Image \
+ && ls -lh /Image
