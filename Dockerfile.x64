@@ -1,0 +1,54 @@
+# Builds a minimal x86_64 Linux kernel as a PE32+ EFISTUB bzImage,
+# ready to be embedded as the `.linux` section of a UKI. The bzImage
+# emitted is what go-coff/stub's chain-load via LoadImage + StartImage
+# hands control to under qemu-system-x86_64.
+#
+# This Dockerfile mirrors Dockerfile.aa64 but cross-compiles the
+# kernel for x86_64 from an aarch64 (or amd64) Debian container, using
+# Debian's gcc-x86-64-linux-gnu package. That keeps the build native
+# regardless of the host architecture — much faster than running an
+# emulated linux/amd64 image under qemu-user.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=6.6.74
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc-x86-64-linux-gnu \
+    libc6-dev-amd64-cross \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+# Cloud-minimal config: start from x86_64 defconfig, then overlay the
+# fragment that strips every legacy x86 platform driver, sound, USB,
+# wireless, ATA/SCSI/MTD, DRM and uncommon filesystems. `olddefconfig`
+# resolves any new dependencies the overlay introduces.
+COPY cloud-x64.config /build/cloud-x64.config
+RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- defconfig \
+ && cat /build/cloud-x64.config >> .config \
+ && make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- olddefconfig
+
+# `bzImage` is the EFISTUB PE32+ kernel — that's what go-coff/pec
+# embeds as `.linux` and what our stub's LoadImage hands to the
+# firmware on the chain-load path.
+RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- -j"$(nproc)" bzImage
+
+RUN cp arch/x86/boot/bzImage /bzImage \
+ && ls -lh /bzImage

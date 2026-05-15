@@ -1,0 +1,60 @@
+# Sibling to Dockerfile.initrd (which targets aarch64), but with an
+# x86_64 /init: same idea, different syscall numbers and instruction.
+# Prints GOCOFF-INITRD-OK on fd 1 then powers the VM off via reboot(2).
+
+FROM debian:bookworm-slim AS build
+
+# Cross-tools (binutils-x86-64-linux-gnu) so the build runs natively on
+# any host arch — much faster than booting the linux/amd64 image under
+# qemu-user emulation just to run `as` and `ld`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    binutils-x86-64-linux-gnu \
+    cpio \
+    gzip \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# /init: write(1, msg, 19) then reboot(MAGIC1, MAGIC2, POWER_OFF, NULL).
+# x86_64 ABI: rdi/rsi/rdx/r10/r8/r9 for args, rax for syscall number,
+# `syscall` instruction. GAS line comments are `#`, not `//`.
+RUN cat > init.s <<'EOS'
+    .text
+    .globl _start
+_start:
+    # write(1, msg, 19)
+    mov     $1,        %rdi
+    lea     msg(%rip), %rsi
+    mov     $19,       %rdx
+    mov     $1,        %rax
+    syscall
+
+    # reboot(LINUX_REBOOT_MAGIC1=0xfee1dead,
+    #        LINUX_REBOOT_MAGIC2=0x28121969,
+    #        LINUX_REBOOT_CMD_POWER_OFF=0x4321fedc,
+    #        NULL)
+    # __NR_reboot = 169
+    mov     $0xfee1dead, %edi
+    mov     $0x28121969, %esi
+    mov     $0x4321fedc, %edx
+    xor     %r10, %r10
+    mov     $169,        %rax
+    syscall
+
+1:  jmp 1b
+
+    .section .rodata
+msg:
+    .ascii "GOCOFF-INITRD-OK\n\0\0\0"
+EOS
+
+# Build a static x86_64 binary via the cross-toolchain.
+RUN x86_64-linux-gnu-as -o init.o init.s \
+ && x86_64-linux-gnu-ld -static -nostdlib -e _start -o init init.o \
+ && x86_64-linux-gnu-strip init \
+ && ls -lh init
+
+# Lay out the initramfs root, then pack with cpio + gzip.
+RUN mkdir -p root && cp init root/init && chmod +x root/init \
+ && (cd root && find . -print0 | cpio --null -ov --format=newc | gzip -9) > /initramfs.cpio.gz \
+ && ls -lh /initramfs.cpio.gz
