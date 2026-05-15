@@ -1,0 +1,53 @@
+# Same source kernel as Dockerfile.aa64 but starts from `tinyconfig`
+# (the kernel's "smallest possible kernel that still links" target) and
+# adds back only what a cloud-VM workload truly cannot do without:
+# EFI boot, PL011 serial console, virtio devices, initramfs and a
+# couple of filesystems.
+#
+# Expected size win over `defconfig + cloud fragment + phase-2 trim`
+# is 3–5×, but the risk is that we miss a required CONFIG and the
+# kernel hangs early or panics. Treat as experimental.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=6.6.74
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+# `tinyconfig` is generic (architecture-independent); follow it with
+# `allnoconfig` semantics for the arch-specific layer, then `defconfig`
+# for arm64 to bring in the irreducible bits, then strip what we
+# really do not need.
+#
+# Practical approach: start from `tinyconfig` and apply our own
+# minimal kconfig fragment that turns ON only the symbols we know we
+# need. `olddefconfig` then fills in the recursive deps.
+COPY tiny-aa64.config /build/tiny-aa64.config
+
+RUN make ARCH=arm64 tinyconfig \
+ && cat /build/tiny-aa64.config >> .config \
+ && make ARCH=arm64 olddefconfig
+
+RUN make ARCH=arm64 -j"$(nproc)" Image
+
+RUN cp arch/arm64/boot/Image /Image \
+ && ls -lh /Image
