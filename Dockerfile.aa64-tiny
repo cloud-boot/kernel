@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cpio \
     wget \
     xz-utils \
+    bsdmainutils \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -47,7 +48,10 @@ RUN make ARCH=arm64 tinyconfig \
  && cat /build/tiny-aa64.config >> .config \
  && make ARCH=arm64 olddefconfig
 
-RUN make ARCH=arm64 -j"$(nproc)" Image
+# vmlinuz.efi: self-decompressing PE32+ EFISTUB. With CONFIG_EFI_ZBOOT=y
+# this target wraps the kernel gzipped inside a tiny stub that
+# decompresses into RAM at boot — drops the on-disk size dramatically.
+RUN make ARCH=arm64 -j"$(nproc)" vmlinuz.efi
 
-RUN cp arch/arm64/boot/Image /Image \
+RUN cp arch/arm64/boot/vmlinuz.efi /Image \
  && ls -lh /Image

@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cpio \
     wget \
     xz-utils \
+    bsdmainutils \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -41,17 +42,14 @@ RUN make ARCH=arm64 defconfig \
  && cat /build/cloud-aa64.config >> .config \
  && make ARCH=arm64 olddefconfig
 
-# Native build (we're on an aarch64 host so no CROSS_COMPILE).
-# `Image` is the PE32+ EFISTUB kernel — that's what go-coff/stub's
-# LoadImage hands to the firmware on the chain-load path.
-#
-# Note: CONFIG_EFI_ZBOOT=y is set in the cloud fragment, but at the
-# time of writing (Linux 6.6.x) the arm64 `Image.gz` target does NOT
-# produce the self-decompressing PE32+ wrapper — only a plain gzipped
-# kernel that the firmware would not know what to do with. Stick with
-# the uncompressed `Image` until we wire up `vmlinuz.efi` generation
-# properly.
-RUN make ARCH=arm64 -j"$(nproc)" Image
+# Native build. With CONFIG_EFI_ZBOOT=y, the `vmlinuz.efi` target
+# produces a self-decompressing PE32+ EFISTUB: a small stub that
+# wraps the kernel image gzipped inside and decompresses it into RAM
+# at boot. ~5× smaller on disk than the bare `Image` (which has zero
+# compression) and still chain-loadable by our stub's LoadImage.
+RUN make ARCH=arm64 -j"$(nproc)" vmlinuz.efi
 
-RUN cp arch/arm64/boot/Image /Image \
+# We export it under the name `Image` so downstream consumers do not
+# need to know whether ZBOOT was on or off.
+RUN cp arch/arm64/boot/vmlinuz.efi /Image \
  && ls -lh /Image
