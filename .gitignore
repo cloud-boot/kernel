@@ -4,3 +4,5 @@
 /direct-kernel.log
 /bzImage
 /initramfs-x64.cpio.gz
+/bzImage
+/initramfs-x64.cpio.gz
