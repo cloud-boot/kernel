@@ -1,0 +1,53 @@
+# Same as Dockerfile.aa64 but builds the kernel with Clang + ThinLTO
+# instead of GCC. ThinLTO lets the compiler do whole-program dead-code
+# elimination across compilation units; on a defconfig+cloud-fragment
+# kernel the saving is usually 10–20 % of .text on top of the gcc -Os
+# already enabled by the fragment.
+#
+# Cost: Clang + lld pulled in (~250 MB of apt deps), build time roughly
+# 1.5× the GCC build the first time.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=6.6.74
+
+# Clang + lld + the cross-binutils we still need for some asm helpers.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    clang \
+    lld \
+    llvm \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    python3 \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+# Layer the cloud-aa64 fragment on top of defconfig, then turn on
+# LTO_CLANG_THIN. Need LLVM=1 from `make` invocation onward.
+COPY cloud-aa64.config /build/cloud-aa64.config
+
+RUN make ARCH=arm64 LLVM=1 defconfig \
+ && cat /build/cloud-aa64.config >> .config \
+ && echo "CONFIG_LTO_CLANG_THIN=y" >> .config \
+ && make ARCH=arm64 LLVM=1 olddefconfig
+
+# Image build under Clang/LLVM. `LLVM=1` selects clang/ld.lld/etc.
+RUN make ARCH=arm64 LLVM=1 -j"$(nproc)" Image
+
+RUN cp arch/arm64/boot/Image /Image \
+ && ls -lh /Image

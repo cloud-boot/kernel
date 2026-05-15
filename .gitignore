@@ -5,3 +5,4 @@
 /initramfs-x64.cpio.gz
 /direct-kernel.log
 /Image-tiny
+/Image-lto
