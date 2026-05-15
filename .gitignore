@@ -1,8 +1,6 @@
 .DS_Store
 /Image
+/bzImage
 /initramfs.cpio.gz
+/initramfs-x64.cpio.gz
 /direct-kernel.log
-/bzImage
-/initramfs-x64.cpio.gz
-/bzImage
-/initramfs-x64.cpio.gz
