@@ -1,0 +1,47 @@
+# x86_64 sibling of Dockerfile.aa64-tiny: starts from `tinyconfig`
+# (smallest kernel that still links) and overlays just enough CONFIGs
+# to boot in QEMU q35 / Cloud Hypervisor / Firecracker — APIC + 8250
+# UART + virtio + ACPI + initramfs.
+#
+# Cross-builds for x86_64 from a Debian Bookworm container running on
+# the host's native arch (aarch64 on Apple Silicon, amd64 elsewhere)
+# via `gcc-x86-64-linux-gnu`. No qemu-user emulation needed for the
+# build itself.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=6.6.74
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc-x86-64-linux-gnu \
+    libc6-dev-amd64-cross \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+COPY tiny-x64.config /build/tiny-x64.config
+
+RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- tinyconfig \
+ && cat /build/tiny-x64.config >> .config \
+ && make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- olddefconfig
+
+RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- -j"$(nproc)" bzImage
+
+RUN cp arch/x86/boot/bzImage /bzImage \
+ && ls -lh /bzImage
