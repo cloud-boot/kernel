@@ -30,10 +30,16 @@ RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}
 
 WORKDIR /build/linux-${LINUX_VERSION}
 
-# Start from the canonical arm64 defconfig: it already enables EFI +
-# EFI_STUB + PL011 serial console + DEVTMPFS + initrd support, which is
-# exactly what we need to boot under QEMU's virt machine via our stub.
-RUN make ARCH=arm64 defconfig
+# Cloud-minimal config: start from `defconfig` (which already enables
+# EFI_STUB + PL011 serial + virtio-blk/net + ACPI), then overlay the
+# fragment that strips every vendor SoC, exotic filesystem, USB,
+# wireless, MMC, sound, DRM and legacy storage stack — none of which a
+# QEMU-virt cloud guest can reach. `make olddefconfig` resolves any
+# new dependencies the overlay introduces.
+COPY cloud-aa64.config /build/cloud-aa64.config
+RUN make ARCH=arm64 defconfig \
+ && cat /build/cloud-aa64.config >> .config \
+ && make ARCH=arm64 olddefconfig
 
 # Native build (we're on an aarch64 host so no CROSS_COMPILE).
 # `Image` is the EFISTUB PE32+ kernel; that's what we embed as `.linux`.
