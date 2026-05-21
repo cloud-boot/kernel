@@ -1,0 +1,121 @@
+# cloud-boot kernel variant with OpenZFS module compiled against it.
+# For use cases where cloud-boot must read kernel+initrd from a ZFS
+# pool on the chained disk (typical: an existing Proxmox VE install
+# on rpool/ROOT/pve-1, an Ubuntu Server install on rpool/ROOT/
+# ubuntu_<id> + bpool/BOOT/ubuntu_<id>).
+#
+# Layout vs Dockerfile.arm64-disk:
+#   1. Same kernel build chain.
+#   2. Adds OpenZFS source + ZFS kernel modules built against the
+#      configured kernel tree.
+#   3. Stages the kernel image as /Image (back-compat with the
+#      task:kernel:arm64 task's cp step) AND the .ko modules under
+#      /modules/ for the initramfs builder to pick up later.
+#
+# Why a separate variant: OpenZFS is CDDL-licensed and out-of-tree,
+# adds ~15 MB to /modules, and pulls in a userspace dep chain
+# (zfsutils-linux) that we don't want in the base disk variant.
+# Distros that don't need ZFS-on-root keep the lean Image-disk;
+# Proxmox / Ubuntu-ZSYS workflows pick Image-disk-zfs.
+#
+# See memory:zfs-root-support for the broader design + the
+# remaining wire-up (zpool/zfs userspace bundling, init mount
+# branch on fs="zfs").
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=7.0.8
+# OpenZFS 2.2.x is the current LTS-ish line; bump as needed but
+# verify the version's kernel-compat matrix at openzfs.github.io.
+ARG ZFS_VERSION=2.2.6
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    bsdmainutils \
+    ca-certificates \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    uuid-dev \
+    libblkid-dev \
+    zlib1g-dev \
+    libudev-dev \
+    libssl-dev \
+    libaio-dev \
+    libattr1-dev \
+    python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# --- Linux kernel (identical to Dockerfile.arm64-disk) ---
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+COPY tiny-arm64.config /build/tiny-arm64.config
+COPY disk-arm64.config /build/disk-arm64.config
+COPY disk-arm64-zfs.config /build/disk-arm64-zfs.config
+COPY patches/arm64-cmdline-extend.patch /build/arm64-cmdline-extend.patch
+RUN patch -p1 < /build/arm64-cmdline-extend.patch
+
+# Same tinyconfig + tiny + disk pipeline as the non-ZFS variant,
+# PLUS the disk-zfs fragment that flips CONFIG_MODULES=y. OpenZFS
+# itself doesn't appear in the kernel .config (out-of-tree) — what
+# matters is that the kernel supports loadable modules + ships
+# the headers + symbols OpenZFS compiles against (CRYPTO_*,
+# ZLIB_INFLATE, … already pulled in by btrfs in the disk fragment).
+RUN make ARCH=arm64 tinyconfig \
+ && cat /build/tiny-arm64.config >> .config \
+ && cat /build/disk-arm64.config >> .config \
+ && cat /build/disk-arm64-zfs.config >> .config \
+ && make ARCH=arm64 olddefconfig
+
+# Build the kernel proper plus modules infrastructure (zfs.ko et al.
+# need modules support enabled — confirm CONFIG_MODULES=y in
+# disk-arm64.config; if not, this build will fail loudly).
+RUN make ARCH=arm64 -j"$(nproc)" vmlinuz.efi modules_prepare
+
+# --- OpenZFS module build ---
+WORKDIR /build
+RUN wget -q "https://github.com/openzfs/zfs/releases/download/zfs-${ZFS_VERSION}/zfs-${ZFS_VERSION}.tar.gz" \
+ && tar -xf "zfs-${ZFS_VERSION}.tar.gz" \
+ && rm "zfs-${ZFS_VERSION}.tar.gz"
+
+WORKDIR /build/zfs-${ZFS_VERSION}
+
+# Configure against the freshly-built kernel tree. --enable-linux-builtin
+# is wrong here (that's for ZFS-baked-into-kernel); we want
+# loadable modules so the initramfs can modprobe them. --with-config=
+# kernel restricts the build to just the kernel module side (skip
+# userspace tools — those will be cross-compiled separately in
+# a follow-up).
+RUN ./configure \
+    KERNEL_CC=aarch64-linux-gnu-gcc \
+    --host=aarch64-linux-gnu \
+    --target=aarch64-linux-gnu \
+    --with-linux=/build/linux-${LINUX_VERSION} \
+    --with-linux-obj=/build/linux-${LINUX_VERSION} \
+    --with-config=kernel \
+    || (cat config.log; exit 1)
+RUN make ARCH=arm64 -j"$(nproc)"
+
+# --- Stage outputs ---
+RUN mkdir -p /modules \
+ && find module -name '*.ko' -exec cp {} /modules/ \; \
+ && ls -lh /modules/
+
+WORKDIR /build/linux-${LINUX_VERSION}
+RUN cp arch/arm64/boot/vmlinuz.efi /Image \
+ && ls -lh /Image /modules
