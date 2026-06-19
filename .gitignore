@@ -2,11 +2,15 @@
 /Image
 /bzImage
 /initramfs.cpio.gz
-/initramfs-x64.cpio.gz
+/initramfs-amd64.cpio.gz
 /direct-kernel.log
 /Image-tiny
 /Image-lto
 /bzImage-tiny
 /Image-zboot
 /Image-tiny-zboot
+/Image-disk
+/bzImage-disk
 /vmlinux-tiny
+/Image-raw
+*.cpio.gz

@@ -5,7 +5,7 @@
 
 FROM debian:bookworm-slim AS build
 
-ARG LINUX_VERSION=6.6.74
+ARG LINUX_VERSION=7.0.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -25,7 +25,7 @@ WORKDIR /build
 
 # Pull the stable tarball directly from kernel.org. Avoids cloning the
 # full git history (~5 GiB) when we only want one revision.
-RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
  && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
  && rm "linux-${LINUX_VERSION}.tar.xz"
 
@@ -37,9 +37,18 @@ WORKDIR /build/linux-${LINUX_VERSION}
 # wireless, MMC, sound, DRM and legacy storage stack — none of which a
 # QEMU-virt cloud guest can reach. `make olddefconfig` resolves any
 # new dependencies the overlay introduces.
-COPY cloud-aa64.config /build/cloud-aa64.config
+COPY cloud-arm64.config /build/cloud-arm64.config
+
+# Expose CMDLINE_EXTEND as a Kconfig choice on arm64 (mainline only ships
+# FROM_BOOTLOADER + FORCE — see patches/arm64-cmdline-extend.patch header
+# for the rationale and the upstream link). Without this patch the
+# CONFIG_CMDLINE_EXTEND=y line in cloud-arm64.config would be silently
+# dropped by `olddefconfig`.
+COPY patches/arm64-cmdline-extend.patch /build/arm64-cmdline-extend.patch
+RUN patch -p1 < /build/arm64-cmdline-extend.patch
+
 RUN make ARCH=arm64 defconfig \
- && cat /build/cloud-aa64.config >> .config \
+ && cat /build/cloud-arm64.config >> .config \
  && make ARCH=arm64 olddefconfig
 
 # Native build. With CONFIG_EFI_ZBOOT=y, the `vmlinuz.efi` target

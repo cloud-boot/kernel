@@ -3,7 +3,7 @@
 # emitted is what go-coff/stub's chain-load via LoadImage + StartImage
 # hands control to under qemu-system-x86_64.
 #
-# This Dockerfile mirrors Dockerfile.aa64 but cross-compiles the
+# This Dockerfile mirrors Dockerfile.arm64 but cross-compiles the
 # kernel for x86_64 from an aarch64 (or amd64) Debian container, using
 # Debian's gcc-x86-64-linux-gnu package. That keeps the build native
 # regardless of the host architecture — much faster than running an
@@ -11,7 +11,7 @@
 
 FROM debian:bookworm-slim AS build
 
-ARG LINUX_VERSION=6.6.74
+ARG LINUX_VERSION=7.0.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
  && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
  && rm "linux-${LINUX_VERSION}.tar.xz"
 
@@ -40,9 +40,9 @@ WORKDIR /build/linux-${LINUX_VERSION}
 # fragment that strips every legacy x86 platform driver, sound, USB,
 # wireless, ATA/SCSI/MTD, DRM and uncommon filesystems. `olddefconfig`
 # resolves any new dependencies the overlay introduces.
-COPY cloud-x64.config /build/cloud-x64.config
+COPY cloud-amd64.config /build/cloud-amd64.config
 RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- defconfig \
- && cat /build/cloud-x64.config >> .config \
+ && cat /build/cloud-amd64.config >> .config \
  && make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- olddefconfig
 
 # `bzImage` is the EFISTUB PE32+ kernel — that's what go-coff/pec

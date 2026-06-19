@@ -1,0 +1,47 @@
+# amd64 sibling of Dockerfile.arm64-disk: tinyconfig + tiny-amd64
+# fragment + disk-amd64 fragment, cross-compiled for x86_64 from the
+# host's native Debian Bookworm container.
+#
+# Same intent as the arm64 build: produce a "bootstrap kernel" that
+# can mount an ext4 /boot from virtio-blk and kexec into a distro
+# kernel + initrd that lives on it.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=7.0.8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc-x86-64-linux-gnu \
+    libc6-dev-amd64-cross \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+COPY tiny-amd64.config /build/tiny-amd64.config
+COPY disk-amd64.config /build/disk-amd64.config
+
+RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- tinyconfig \
+ && cat /build/tiny-amd64.config >> .config \
+ && cat /build/disk-amd64.config >> .config \
+ && make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- olddefconfig
+
+RUN make ARCH=x86_64 CROSS_COMPILE=x86_64-linux-gnu- -j"$(nproc)" bzImage
+
+RUN cp arch/x86/boot/bzImage /bzImage \
+ && ls -lh /bzImage

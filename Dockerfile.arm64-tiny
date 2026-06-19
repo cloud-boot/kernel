@@ -1,4 +1,4 @@
-# Same source kernel as Dockerfile.aa64 but starts from `tinyconfig`
+# Same source kernel as Dockerfile.arm64 but starts from `tinyconfig`
 # (the kernel's "smallest possible kernel that still links" target) and
 # adds back only what a cloud-VM workload truly cannot do without:
 # EFI boot, PL011 serial console, virtio devices, initramfs and a
@@ -10,7 +10,7 @@
 
 FROM debian:bookworm-slim AS build
 
-ARG LINUX_VERSION=6.6.74
+ARG LINUX_VERSION=7.0.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
  && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
  && rm "linux-${LINUX_VERSION}.tar.xz"
 
@@ -42,10 +42,15 @@ WORKDIR /build/linux-${LINUX_VERSION}
 # Practical approach: start from `tinyconfig` and apply our own
 # minimal kconfig fragment that turns ON only the symbols we know we
 # need. `olddefconfig` then fills in the recursive deps.
-COPY tiny-aa64.config /build/tiny-aa64.config
+COPY tiny-arm64.config /build/tiny-arm64.config
+
+# Expose CMDLINE_EXTEND as a Kconfig choice on arm64 — see
+# patches/arm64-cmdline-extend.patch header for the rationale.
+COPY patches/arm64-cmdline-extend.patch /build/arm64-cmdline-extend.patch
+RUN patch -p1 < /build/arm64-cmdline-extend.patch
 
 RUN make ARCH=arm64 tinyconfig \
- && cat /build/tiny-aa64.config >> .config \
+ && cat /build/tiny-arm64.config >> .config \
  && make ARCH=arm64 olddefconfig
 
 # vmlinuz.efi: self-decompressing PE32+ EFISTUB. With CONFIG_EFI_ZBOOT=y

@@ -1,4 +1,4 @@
-# Sibling to Dockerfile.initrd (which targets aarch64), but with an
+# Sibling to Dockerfile.initrd-arm64, but with an
 # x86_64 /init: same idea, different syscall numbers and instruction.
 # Prints GOCOFF-INITRD-OK on fd 1 then powers the VM off via reboot(2).
 

@@ -1,0 +1,57 @@
+# Bootstrap kernel for the "kexec into a distro" pipeline. Builds on
+# Dockerfile.arm64-tiny by layering disk-arm64.config (ext4 + GPT + kexec)
+# on top of tiny-arm64.config. The resulting kernel:
+#
+#   * boots via EFISTUB exactly like the tiny variant
+#   * can read a /boot ext4 partition from virtio-blk
+#   * can kexec_file_load a distro vmlinuz + initrd from there
+#
+# Expected size delta vs tiny+ZBOOT: a few hundred KiB (ext4 + kexec
+# infra). Measure with `docker run --rm go-coff-kernel:arm64-disk
+# ls -lh /Image`.
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=7.0.8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    bsdmainutils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+COPY tiny-arm64.config /build/tiny-arm64.config
+COPY disk-arm64.config /build/disk-arm64.config
+
+# Expose CMDLINE_EXTEND as a Kconfig choice on arm64 — see
+# patches/arm64-cmdline-extend.patch header for the rationale.
+COPY patches/arm64-cmdline-extend.patch /build/arm64-cmdline-extend.patch
+RUN patch -p1 < /build/arm64-cmdline-extend.patch
+
+# tinyconfig → tiny fragment → disk fragment → olddefconfig (resolves
+# transitive deps Kconfig discovers along the way).
+RUN make ARCH=arm64 tinyconfig \
+ && cat /build/tiny-arm64.config >> .config \
+ && cat /build/disk-arm64.config >> .config \
+ && make ARCH=arm64 olddefconfig
+
+RUN make ARCH=arm64 -j"$(nproc)" vmlinuz.efi
+
+RUN cp arch/arm64/boot/vmlinuz.efi /Image \
+ && ls -lh /Image

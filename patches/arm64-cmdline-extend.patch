@@ -1,0 +1,35 @@
+# arm64: expose CMDLINE_EXTEND as a Kconfig choice.
+#
+# Most other arches (arm, riscv, powerpc, loongarch, sh) let you append a
+# built-in cmdline fragment to whatever the bootloader provides via
+# CONFIG_CMDLINE_EXTEND=y. arm64 only offers two extremes — FROM_BOOTLOADER
+# (default cmdline used only when bootloader's is empty) or FORCE (default
+# cmdline overrides the bootloader entirely). The EFI stub and the FDT
+# scanner in the kernel both already check IS_ENABLED(CONFIG_CMDLINE_EXTEND),
+# so once the symbol is defined for arm64 the code path lights up with no
+# other changes.
+#
+# We carry this small patch in cloud-boot so the cloud-boot stub kernel can
+# bake `nr_cpus=1` into its image (a design constraint, not a workaround —
+# see cloud-arm64.config) without losing the runtime-injected cloudboot.*
+# directives the UKI's .cmdline section carries.
+#
+# Upstream context: this has been proposed multiple times (see e.g.
+#   https://lore.kernel.org/lkml/20220909142208.4480-1-chenlinxuan@uniontech.com/
+# ) and is uncontroversial; we may drop this patch once it lands.
+
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -2398,6 +2398,12 @@ config CMDLINE_FORCE
+ 	  This is useful if you cannot or don't want to change the
+ 	  command-line options your boot loader passes to the kernel.
+
++config CMDLINE_EXTEND
++	bool "Extend bootloader kernel arguments"
++	help
++	  The default kernel command string will be appended to the
++	  command-line arguments provided during boot.
++
+ endchoice
+
+ config EFI_STUB

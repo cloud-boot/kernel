@@ -1,4 +1,4 @@
-# Same as Dockerfile.aa64 but builds the kernel with Clang + ThinLTO
+# Same as Dockerfile.arm64 but builds the kernel with Clang + ThinLTO
 # instead of GCC. ThinLTO lets the compiler do whole-program dead-code
 # elimination across compilation units; on a defconfig+cloud-fragment
 # kernel the saving is usually 10–20 % of .text on top of the gcc -Os
@@ -9,7 +9,7 @@
 
 FROM debian:bookworm-slim AS build
 
-ARG LINUX_VERSION=6.6.74
+ARG LINUX_VERSION=7.0.8
 
 # Clang + lld + the cross-binutils we still need for some asm helpers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,18 +31,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${LINUX_VERSION}.tar.xz" \
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
  && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
  && rm "linux-${LINUX_VERSION}.tar.xz"
 
 WORKDIR /build/linux-${LINUX_VERSION}
 
-# Layer the cloud-aa64 fragment on top of defconfig, then turn on
+# Layer the cloud-arm64 fragment on top of defconfig, then turn on
 # LTO_CLANG_THIN. Need LLVM=1 from `make` invocation onward.
-COPY cloud-aa64.config /build/cloud-aa64.config
+COPY cloud-arm64.config /build/cloud-arm64.config
+
+# Expose CMDLINE_EXTEND as a Kconfig choice on arm64 — see
+# patches/arm64-cmdline-extend.patch header for the rationale.
+COPY patches/arm64-cmdline-extend.patch /build/arm64-cmdline-extend.patch
+RUN patch -p1 < /build/arm64-cmdline-extend.patch
 
 RUN make ARCH=arm64 LLVM=1 defconfig \
- && cat /build/cloud-aa64.config >> .config \
+ && cat /build/cloud-arm64.config >> .config \
  && echo "CONFIG_LTO_CLANG_THIN=y" >> .config \
  && make ARCH=arm64 LLVM=1 olddefconfig
 

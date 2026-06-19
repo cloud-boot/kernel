@@ -1,0 +1,53 @@
+# Builds a minimal riscv64 Linux kernel as a PE32+ EFISTUB Image, ready
+# to be embedded as the `.linux` section of a UKI. Cross-compiled from
+# the host's native arch (the bookworm-slim base has gcc-riscv64-linux-gnu
+# available out of the box).
+
+FROM debian:bookworm-slim AS build
+
+ARG LINUX_VERSION=7.0.8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc-riscv64-linux-gnu \
+    libssl-dev \
+    libelf-dev \
+    bc \
+    flex \
+    bison \
+    cpio \
+    wget \
+    xz-utils \
+    bsdmainutils \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LINUX_VERSION}.tar.xz" \
+ && tar -xf "linux-${LINUX_VERSION}.tar.xz" \
+ && rm "linux-${LINUX_VERSION}.tar.xz"
+
+WORKDIR /build/linux-${LINUX_VERSION}
+
+# Cloud-minimal: start from defconfig (riscv defconfig enables SBI / EFI /
+# virtio drivers / 8250 serial / ACPI), overlay the trim fragment, then
+# `olddefconfig` to resolve dependencies the overlay introduces.
+COPY cloud-riscv64.config /build/cloud-riscv64.config
+RUN make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- defconfig \
+ && cat /build/cloud-riscv64.config >> .config \
+ && make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
+
+# Two targets:
+#  - `vmlinuz.efi`: the EFI ZBOOT PE32+ wrapper that the UKI stub
+#    chain-loads via LoadImage. Self-decompresses to RAM at boot.
+#  - `Image`     : the raw kernel image (no PE wrapper). kexec_file_load
+#    on Linux 6.6 doesn't recognise EFI ZBOOT, so a target that is fetched
+#    over OCI and kexec'd must ship as raw `Image`. cloud-boot-init's
+#    chain-load path therefore consumes /Image-raw, while the UKI's
+#    embedded `.linux` section uses /Image (vmlinuz.efi).
+RUN make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)" Image vmlinuz.efi
+
+RUN cp arch/riscv/boot/vmlinuz.efi /Image \
+ && cp arch/riscv/boot/Image       /Image-raw \
+ && ls -lh /Image /Image-raw
