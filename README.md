@@ -2,12 +2,13 @@
 
 # cloud-boot/kernel
 
-Reproducible end-to-end test scaffolding for [`go-coff/stub`](../stub):
+Reproducible end-to-end test scaffolding for [`go-coff/stub`](https://github.com/go-coff/stub):
 Dockerfiles that produce minimal cloud-guest Linux kernels (PE32+
 EFISTUB) and a microscopic initramfs whose `/init` prints a magic
 banner before powering the VM down.
 
-`task` from the stub repo then assembles them into a UKI via `pec` and
+`task` from the stub repo then assembles them into a UKI via
+[`pectl`](https://github.com/go-coff/pectl) and
 boots it under QEMU + OVMF to validate that the whole pipeline — stub
 chain-load + EFI_LOAD_FILE2_PROTOCOL initrd + kernel handoff — works
 on a real Linux kernel.
@@ -49,8 +50,9 @@ docker create --name i go-coff-initrd:arm64      && docker cp i:/initramfs.cpio.
 ## Use
 
 ```sh
+go install github.com/go-coff/pectl@latest
 cd ../stub
-go run ../pec append \
+pectl append \
     --linux=../kernel/Image \
     --initrd=../kernel/initramfs.cpio.gz \
     --cmdline=<(echo -n "console=ttyAMA0 ip=dhcp") \
@@ -67,4 +69,4 @@ native `make`); subsequent builds hit the layer cache and are instant.
 
 ## License
 
-[BSD 3-Clause](../stub/LICENSE).
+[BSD 3-Clause](https://github.com/go-coff/stub/blob/main/LICENSE).

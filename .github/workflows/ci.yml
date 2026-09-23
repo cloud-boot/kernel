@@ -1,0 +1,225 @@
+# This repository held eleven Dockerfiles, eight kernel config fragments and a
+# patch, and nothing ever ran against a change to any of them. A rename, a
+# dropped config, a typo in a CONFIG_ line: all merged silently, and surfaced
+# hours later as a failed kernel build in whoever's checkout picked it up next.
+#
+# What it deliberately does NOT do is build a kernel. Eleven cross-compiled
+# kernels is tens of minutes each and the six-hour job ceiling is real; a lane
+# nobody waits for is a lane nobody keeps green. Every check below is cheap,
+# and each one states what it proves and what it does not, so the gap between
+# "ci is green" and "the kernels build" stays visible rather than assumed.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# GitHub's default shell is `bash -e`, which aborts a step at its first
+# non-zero command. Several steps below WALK a set, print a line per item and
+# accumulate an rc, and under -e they stop at the first item that does not
+# match rather than reporting the rest -- which is how this lane failed its own
+# first run: two of the eleven Dockerfiles reference no config file, `grep`
+# found nothing, exited 1, and took the step with it after fourteen ok lines.
+# A local `bash script` has no -e and showed none of it. Errexit is off here
+# and every step ends in an explicit `exit`, so a step fails only by deciding to.
+defaults:
+  run:
+    shell: bash -uo pipefail {0}
+
+jobs:
+  inputs:
+    name: every build input a Dockerfile names is here
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 1. PROVES: every `*.config` and `patches/*.patch` named inside a
+      #    Dockerfile exists in the tree, and every config file in the tree is
+      #    named by at least one Dockerfile.
+      #    DOES NOT PROVE: that the file is USED once copied, or that the
+      #    kernel accepts it.
+      #
+      #    Both directions matter, and they catch opposite mistakes. A
+      #    reference with no file is a build that fails at COPY. A file with
+      #    no reference is a fragment someone still edits believing it ships.
+      - name: Dockerfile references resolve, both ways
+        run: |
+          rc=0
+          seen=$(mktemp)
+          for d in Dockerfile.*; do
+            refs=$(grep -ohE '[A-Za-z0-9._-]+\.config|patches/[A-Za-z0-9._-]+\.patch' "$d" | sort -u)
+            for r in $refs; do
+              echo "$r" >> "$seen"
+              if [ -f "$r" ]; then printf '  ok      %-28s -> %s\n' "$d" "$r"
+              else printf '  MISSING %-28s -> %s\n' "$d" "$r"; rc=1; fi
+            done
+          done
+          for f in *.config patches/*.patch; do
+            [ -e "$f" ] || continue
+            if ! grep -qxF "$f" "$seen"; then
+              printf '  ORPHAN  %s -- no Dockerfile names it\n' "$f"; rc=1
+            fi
+          done
+          exit $rc
+
+      # 2. PROVES: step 1 can still fail. If the extractor's pattern ever
+      #    stops matching -- a rename to `.cfg`, a COPY written with a
+      #    variable -- step 1 goes quiet and passes on an empty set, which
+      #    reads exactly like success. This gives it something it must catch.
+      - name: The reference check still catches a missing file
+        run: |
+          tmp=$(mktemp -d); cp -r . "$tmp/t"; cd "$tmp/t"
+          printf 'FROM scratch\nCOPY no-such-fragment.config /\n' > Dockerfile.selftest
+          if grep -ohE '[A-Za-z0-9._-]+\.config' Dockerfile.selftest | grep -q 'no-such-fragment.config' \
+             && [ ! -f no-such-fragment.config ]; then
+            echo "self-test ok: a reference with no file is visible to the pattern above"
+          else
+            echo "SELF-TEST FAILED: step 1 would not have seen this. It proves nothing."; exit 1
+          fi
+
+      # 3. PROVES: every line of every config fragment is one the kernel's own
+      #    parser will act on. Each Dockerfile applies its fragment as
+      #    `cat frag >> .config && make olddefconfig`, so the lines here are
+      #    read by scripts/kconfig/confdata.c, and that is where the rule
+      #    below comes from rather than from taste.
+      #
+      #    Seven lines in the tiny-* fragments carry a trailing comment:
+      #
+      #        CONFIG_SMP=y                  # virt machines can be multi-vCPU
+      #
+      #    Those are FINE, and the first version of this step wrongly failed
+      #    them. For a boolean or tristate, conf_read_simple() inspects p[0]
+      #    and stops; for a string it reads to the closing quote. The comment
+      #    is never looked at. The kernels these fragments build are the
+      #    evidence.
+      #
+      #    An INT or HEX is the case that breaks, and it breaks quietly:
+      #    the whole rest of the line is handed to sym_string_valid(), `4 #
+      #    note` is not a valid integer, and the value is DISCARDED with a
+      #    conf_warning nobody reads in a build log. The symbol then keeps
+      #    its default and the kernel ships with a setting no one chose.
+      #    There are none today. This step is what keeps it that way.
+      #
+      #    DOES NOT PROVE: that a symbol exists in this kernel version, or
+      #    that its dependencies let it take the value asked for. olddefconfig
+      #    silently drops a symbol whose dependencies are unmet, and only a
+      #    real configure run against real sources sees that.
+      - name: Config fragments are well-formed
+        run: |
+          rc=0
+          for f in *.config; do
+            n=0; bad=0
+            while IFS= read -r line; do
+              n=$((n+1))
+              case "$line" in ''|'#'*) continue ;; esac
+              # A trailing comment is allowed after y/m/n or a quoted string,
+              # because the parser stops before it. After an int or hex it is
+              # part of the value, and the value is then thrown away.
+              if printf '%s' "$line" | grep -qE '^CONFIG_[A-Z0-9_]+=((y|m|n|".*")([ \t]+#.*)?|-?[0-9]+|0x[0-9a-fA-F]+)[ \t]*$'; then
+                continue
+              fi
+              if printf '%s' "$line" | grep -qE '^CONFIG_[A-Z0-9_]+=(-?[0-9]+|0x[0-9a-fA-F]+)[ \t]*#'; then
+                printf '  DROPPED %s:%d: int/hex with a trailing comment -- confdata.c discards this value\n' "$f" "$n"
+              else
+                printf '  BAD     %s:%d: %s\n' "$f" "$n" "$line"
+              fi
+              rc=1; bad=1
+            done < "$f"
+            if [ "$bad" -eq 0 ]; then printf '  ok   %-24s %d lines\n' "$f" "$n"; fi
+          done
+          exit $rc
+
+      # 4. PROVES: no tracked file is a built artifact. The build drops ~88 MB
+      #    of kernels and initramfs images into this directory, and .gitignore
+      #    keeps them out BY NAME -- /Image, /bzImage, /Image-tiny, and so on.
+      #    That list dies at the next rename: a variant called `Image-nvme`
+      #    matches nothing and gets committed by the next `git add -A`, and
+      #    git's own 50 MB push warning is the only thing that would say so.
+      #    This checks the property instead of the name.
+      #    DOES NOT PROVE: that the ignore list is complete -- it is a second
+      #    line, not a replacement.
+      - name: No built artifact is tracked
+        run: |
+          rc=0
+          while read -r f; do
+            sz=$(wc -c < "$f")
+            if [ "$sz" -gt 1048576 ]; then printf '  BIG   %s (%s bytes)\n' "$f" "$sz"; rc=1; continue; fi
+            case "$(file -b --mime-type "$f")" in
+              text/*|inode/x-empty|application/json) ;;
+              *) printf '  BINARY %s (%s)\n' "$f" "$(file -b "$f")"; rc=1 ;;
+            esac
+          done <<< "$(git ls-files)"
+          # A step that prints nothing on success looks the same as a step
+          # whose loop never ran.
+          if [ "$rc" -eq 0 ]; then printf '  ok   %s tracked files, none is a built artifact\n' "$(git ls-files | wc -l | tr -d ' ')"; fi
+          exit $rc
+
+  dockerfiles:
+    name: every Dockerfile parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+
+      # PROVES: each Dockerfile is syntactically valid to the same frontend
+      #    that will build it, with every ARG and stage reference resolved.
+      #    `--call=check` runs the frontend's own linter and evaluates the
+      #    build graph without executing a single RUN.
+      #    DOES NOT PROVE: that any RUN succeeds, that a Debian package still
+      #    exists, or that the kernel compiles. Those need the build.
+      - name: buildx check
+        run: |
+          rc=0
+          for d in Dockerfile.*; do
+            if docker buildx build --call=check -f "$d" . ; then printf '  ok   %s\n' "$d"
+            else printf '  FAIL %s\n' "$d"; rc=1; fi
+          done
+          exit $rc
+
+  links:
+    name: every link in the README resolves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # PROVES: every absolute URL in the README answers 2xx/3xx today.
+      #    This README carried two RELATIVE links, `](../stub)`, which resolve
+      #    only in a checkout where a sibling directory happens to exist and
+      #    404 for every reader on github.com. A relative link is invisible to
+      #    a URL checker, so they are rejected outright below.
+      #    DOES NOT PROVE: that a page says what the sentence linking to it
+      #    claims.
+      - name: Check
+        run: |
+          if grep -nE '\]\(\.\.?/' README.md; then
+            echo "::error::relative link in README.md -- it resolves only in a local checkout"
+            exit 1
+          fi
+          urls=$(grep -ohE 'https?://[^)">< [:space:]]+' README.md | sed -E 's/[.,`]+$//' | sort -u)
+          test -n "$urls" || { echo "::error::no links found; is the README still there?"; exit 1; }
+          echo "checking $(printf '%s\n' "$urls" | wc -l) distinct URLs"
+          fail=0
+          while read -r u; do
+            case "$u" in *img.shields.io*) continue ;; esac
+            code=000
+            for _ in 1 2 3; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 25 "$u" 2>/dev/null) || true
+              code=${code:-000}
+              case "$code" in 2*|3*) break ;; esac
+              sleep 3
+            done
+            case "$code" in
+              2*|3*) printf '  ok   %s  %s\n' "$code" "$u" ;;
+              *)     printf '  FAIL %s  %s\n' "$code" "$u"; fail=1 ;;
+            esac
+          done <<< "$urls"
+          test "$fail" -eq 0 || { echo "::error::at least one link does not resolve"; exit 1; }
