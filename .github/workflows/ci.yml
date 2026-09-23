@@ -23,6 +23,18 @@ concurrency:
 permissions:
   contents: read
 
+# GitHub's default shell is `bash -e`, which aborts a step at its first
+# non-zero command. Several steps below WALK a set, print a line per item and
+# accumulate an rc, and under -e they stop at the first item that does not
+# match rather than reporting the rest -- which is how this lane failed its own
+# first run: two of the eleven Dockerfiles reference no config file, `grep`
+# found nothing, exited 1, and took the step with it after fourteen ok lines.
+# A local `bash script` has no -e and showed none of it. Errexit is off here
+# and every step ends in an explicit `exit`, so a step fails only by deciding to.
+defaults:
+  run:
+    shell: bash -uo pipefail {0}
+
 jobs:
   inputs:
     name: every build input a Dockerfile names is here
@@ -41,7 +53,6 @@ jobs:
       #    no reference is a fragment someone still edits believing it ships.
       - name: Dockerfile references resolve, both ways
         run: |
-          set -uo pipefail
           rc=0
           seen=$(mktemp)
           for d in Dockerfile.*; do
@@ -66,7 +77,6 @@ jobs:
       #    reads exactly like success. This gives it something it must catch.
       - name: The reference check still catches a missing file
         run: |
-          set -uo pipefail
           tmp=$(mktemp -d); cp -r . "$tmp/t"; cd "$tmp/t"
           printf 'FROM scratch\nCOPY no-such-fragment.config /\n' > Dockerfile.selftest
           if grep -ohE '[A-Za-z0-9._-]+\.config' Dockerfile.selftest | grep -q 'no-such-fragment.config' \
@@ -105,7 +115,6 @@ jobs:
       #    real configure run against real sources sees that.
       - name: Config fragments are well-formed
         run: |
-          set -uo pipefail
           rc=0
           for f in *.config; do
             n=0; bad=0
@@ -125,7 +134,7 @@ jobs:
               fi
               rc=1; bad=1
             done < "$f"
-            [ "$bad" -eq 0 ] && printf '  ok   %-24s %d lines\n' "$f" "$n"
+            if [ "$bad" -eq 0 ]; then printf '  ok   %-24s %d lines\n' "$f" "$n"; fi
           done
           exit $rc
 
@@ -140,7 +149,6 @@ jobs:
       #    line, not a replacement.
       - name: No built artifact is tracked
         run: |
-          set -uo pipefail
           rc=0
           while read -r f; do
             sz=$(wc -c < "$f")
@@ -150,6 +158,9 @@ jobs:
               *) printf '  BINARY %s (%s)\n' "$f" "$(file -b "$f")"; rc=1 ;;
             esac
           done <<< "$(git ls-files)"
+          # A step that prints nothing on success looks the same as a step
+          # whose loop never ran.
+          if [ "$rc" -eq 0 ]; then printf '  ok   %s tracked files, none is a built artifact\n' "$(git ls-files | wc -l | tr -d ' ')"; fi
           exit $rc
 
   dockerfiles:
@@ -167,7 +178,6 @@ jobs:
       #    exists, or that the kernel compiles. Those need the build.
       - name: buildx check
         run: |
-          set -uo pipefail
           rc=0
           for d in Dockerfile.*; do
             if docker buildx build --call=check -f "$d" . ; then printf '  ok   %s\n' "$d"
@@ -190,7 +200,6 @@ jobs:
       #    claims.
       - name: Check
         run: |
-          set -uo pipefail
           if grep -nE '\]\(\.\.?/' README.md; then
             echo "::error::relative link in README.md -- it resolves only in a local checkout"
             exit 1
